@@ -287,9 +287,102 @@ def generate_detailed_report(df, ticker):
         "levels_text": levels_text,
         "composite_text": composite,
         "advice_text": advice_text,
-        "per_candle_df": per_candle_df
+        "per_candle_df": per_candle_df,
+        "current_price": last['Close_for_calc'],
+        "ema10": lv['EMA10'],
+        "ema30": lv['EMA30'],
+        "ema40": lv['EMA40'],
+        "recent_high": lv['recent_high_20'],
+        "recent_low": lv['recent_low_20'],
+        "price_pos": price_pos,
+        "macd_trend": macd_trend,
+        "last_rsi": last_rsi,
+        "vol_ratio": vol_ratio
     }
     return report
+
+def generate_holding_advice(report, shares, cost_price=None):
+    """根據持股數量生成個性化持倉建議"""
+    if shares <= 0:
+        return None
+    
+    ticker = report['ticker']
+    current_price = report['current_price']
+    ema10, ema30, ema40 = report['ema10'], report['ema30'], report['ema40']
+    recent_high, recent_low = report['recent_high'], report['recent_low']
+    price_pos = report['price_pos']
+    macd_trend = report['macd_trend']
+    last_rsi = report['last_rsi']
+    vol_ratio = report['vol_ratio']
+    
+    # 假設成本價：如果未提供，預設為 EMA30 或輸入
+    if cost_price is None:
+        cost_price = round(ema30, 2)  # 假設成本在 EMA30 附近
+    market_value = round(shares * current_price, 0)
+    
+    # 持倉規模評估（假設總資產未知，簡化為單股原則）
+    scale_note = "持倉規模偏大（超過單一股票的 10% 原則）" if shares * current_price > 10000 else "持倉規模適中"
+    recent_trend = "震盪加劇，短線有回調風險" if last_rsi > 60 or vol_ratio > 1.5 else "趨勢穩定，中線機會"
+    
+    # 建議邏輯：基於技術面動態生成
+    reduce_pct = "30–50%" if last_rsi > 70 or price_pos == "已跌破 EMA30" else "20–30%"
+    retain_shares = int(shares * 0.5)  # 簡化計算
+    stop_loss = round(ema30 * 0.95, 2)  # EMA30 下方 5%
+    breakout_level = round(recent_high, 2)
+    downside_target = round(ema40, 2)
+    
+    holding_context = f"""📌 你的持倉情境
+
+假設成本價在 ${cost_price} 附近（因為當前價格就在 EMA10/30 區間），市值大約 ${market_value:,} 左右。
+
+{scale_note}。
+
+近期走勢：{recent_trend}。"""
+    
+    strategies = f"""✅ 建議策略
+1. 倉位管理
+
+建議先降風險：可考慮 減倉 {reduce_pct}，鎖定部分利潤或降低風險。
+
+若你仍看好中長期 → 保留 {retain_shares:,}–{int(shares * 0.6):,} 股，避免全倉承擔波動。
+
+2. 止損 / 防守位
+
+EMA30 = ${ema30:.2f} 是關鍵支撐。
+
+建議設 止損在 ${stop_loss}–${ema30 * 0.96:.2f} 區間（跌破 EMA40 附近），若放量下跌則立即止損。
+
+3. 上漲應對
+
+若能 站穩 EMA10 (${ema10:.2f}) 並放量反彈 → 可暫時持有，觀察能否突破 近期高點 ${breakout_level}。
+
+若放量突破 ${breakout_level}，可考慮再加回部分倉位。
+
+4. 下跌應對
+
+若跌破 ${ema30:.2f}（EMA30），需警惕 → 可能下探 ${downside_target}（EMA40）甚至 ${recent_low:.2f} 低點。
+
+一旦出現此情境 → 建議空倉或只留小倉位。
+
+5. 短線對沖（進階策略）
+
+如果你能操作期權（美股常用）：
+
+可以賣出部分 Covered Call（例如 ${breakout_level + 0.5} strike, 1 個月內到期），收取權利金降低成本，同時對沖震盪風險。
+
+這樣即使股價整理，你仍可獲得期權收入。"""
+    
+    action_summary = f"""🎯 行動建議（簡化版）
+
+立即執行：減倉至 {int(shares * 0.5):,} 股左右 → 分散風險。
+
+守住 EMA30 (${ema30:.2f})：可繼續觀望，若跌破就嚴格止損。
+
+若突破 ${breakout_level} 並放量：可重新加碼或持有待漲。
+
+若回落到 ${stop_loss} 以下：建議清倉，等待新機會。"""
+    
+    return f"好的 👍 你有 {shares:,} 股 {ticker}，我幫你依據上面整理的技術面 + 風險控管來給具體操作建議：\n\n{holding_context}\n\n{strategies}\n\n{action_summary}"
 
 # ----------------- Streamlit UI -----------------
 st.title("📈 自動日報表：最後 5 日K + 詳細綜合解讀（含前因後果）")
@@ -299,6 +392,11 @@ with st.sidebar:
     period = st.selectbox("歷史資料區間", options=["1mo","3mo","6mo","1y","2y"], index=2)
     interval = "1d"
     show_candlestick = st.checkbox("顯示 K 線圖（需要 mplfinance）", value=False)
+    
+    # 新增持股數量輸入
+    shares = st.number_input("你的持股數量（股）", min_value=0, value=0, step=100)
+    cost_price = st.number_input("你的平均成本價（選填，預設使用 EMA30）", min_value=0.0, value=0.0, step=0.01) if shares > 0 else 0.0
+    
     run_button = st.button("生成報表")
 
 if run_button:
@@ -367,6 +465,12 @@ if run_button:
 
             st.subheader("最近 5 根 K 線逐根解讀（含RSI）")
             st.dataframe(report['per_candle_df'])
+
+            # 新增：持倉操作建議
+            if shares > 0:
+                st.subheader("💼 個性化持倉操作建議")
+                holding_advice = generate_holding_advice(report, shares, cost_price if cost_price > 0 else None)
+                st.markdown(holding_advice)
 
             st.info("提示：程式使用 'Adj Close'（若有）做指標計算。請記得將停損與倉位依照你的風險承受度調整。新增RSI輔助超買超賣判斷。")
             st.success("報表產生完成 ✅")
