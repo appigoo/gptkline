@@ -246,7 +246,7 @@ def generate_detailed_report(df, ticker):
     hist_context = historical_context(df)
 
     # future scenarios (後果)
-    macd_trend = "上升" if last['MACD_hist'] > last['MACD_hist'].iloc[-3] if len(df)>=3 else "中性"
+    macd_trend = "上升" if len(df) >= 3 and last['MACD_hist'] > last['MACD_hist'].iloc[-3] else "中性"
     price_pos = ("收在 EMA10 之上" if last['Close_for_calc'] > lv['EMA10']
                  else "收在 EMA10 與 EMA30 之間" if last['Close_for_calc'] > lv['EMA30']
                  else "已跌破 EMA30")
