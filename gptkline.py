@@ -246,15 +246,16 @@ def generate_detailed_report(df, ticker):
     hist_context = historical_context(df)
 
     # future scenarios (後果)
-    macd_trend = "上升" if len(df) >= 3 and last['MACD_hist'] > last['MACD_hist'].iloc[-3] else "中性"
+    macd_trend = "上升" if len(df) >= 3 and last['MACD_hist'] > df['MACD_hist'].iloc[-3] else "中性"
     price_pos = ("收在 EMA10 之上" if last['Close_for_calc'] > lv['EMA10']
                  else "收在 EMA10 與 EMA30 之間" if last['Close_for_calc'] > lv['EMA30']
                  else "已跌破 EMA30")
     future_scen = future_scenarios(df, last_rsi, macd_trend, price_pos, vol_ratio)
 
     # composite meaning
-    macd_hint = "動能仍正但柱體縮小（需留意動能是否繼續衰竭）" if len(df) >= 3 and last['MACD_hist'] > 0 and last['MACD_hist'] < last['MACD_hist'].iloc[-3] else \
-               ("動能擴張（上攻續有機會）" if len(df) >= 3 and last['MACD_hist'] > last['MACD_hist'].iloc[-3] else "動能偏弱或收斂")
+    macd_hist_3ago = df['MACD_hist'].iloc[-3] if len(df) >= 3 else 0
+    macd_hint = "動能仍正但柱體縮小（需留意動能是否繼續衰竭）" if len(df) >= 3 and last['MACD_hist'] > 0 and last['MACD_hist'] < macd_hist_3ago else \
+               ("動能擴張（上攻續有機會）" if len(df) >= 3 and last['MACD_hist'] > macd_hist_3ago else "動能偏弱或收斂")
 
     composite = (
         f"目前價格 {price_pos}；{macd_hint}。異動量能：{vol_note}。{rsi_note}\n"
