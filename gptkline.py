@@ -45,6 +45,13 @@ def compute_indicators(df: pd.DataFrame):
     df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
     df['MACD_hist'] = df['DIF'] - df['DEA']  # positive => 多方動能
 
+    # RSI (14日)
+    delta = c.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
     # 成交量平均
     df['VOL_MA20'] = df['Volume'].rolling(window=20, min_periods=1).mean()
     return df
@@ -75,7 +82,7 @@ def classify_candle(o, h, l, c):
 
     return typ
 
-def single_candle_interpret(row, ema10, ema30, vol_ma20):
+def single_candle_interpret(row, ema10, ema30, vol_ma20, rsi):
     o, h, l, c, v = row['Open'], row['High'], row['Low'], row['Close_for_calc'], row['Volume']
     typ = classify_candle(o, h, l, c)
     # 價位相對均線
@@ -96,7 +103,9 @@ def single_candle_interpret(row, ema10, ema30, vol_ma20):
             vol_note = f"量縮（{ratio:.2f}x 近20日均量）"
         else:
             vol_note = f"量正常（{ratio:.2f}x 近20日均量）"
-    return f"{typ}；{pos}；{vol_note}"
+    # RSI 補充
+    rsi_note = f"RSI={rsi:.1f}（" + ("超買>70，需防回檔" if rsi > 70 else "超賣<30，潛在反彈" if rsi < 30 else "中性50附近") + "）"
+    return f"{typ}；{pos}；{vol_note}；{rsi_note}"
 
 def overall_trend_text(df):
     last = df.iloc[-1]
@@ -127,6 +136,60 @@ def macd_status(df):
             cross = "（近期出現 MACD 死亡交叉）"
     return f"DIF={dif:.3f}, DEA={dea:.3f}, MACD_hist={hist:.3f}；柱狀態趨勢：{hist_trend} {cross}"
 
+def rsi_status(last_rsi):
+    if last_rsi > 70:
+        return "RSI>70（超買，短期有回檔風險）"
+    elif last_rsi < 30:
+        return "RSI<30（超賣，潛在反彈機會）"
+    else:
+        return f"RSI={last_rsi:.1f}（中性，無明顯極端）"
+
+def historical_context(df):
+    """分析前因：最近10日趨勢變化、關鍵高低點"""
+    if len(df) < 10:
+        return "資料不足，無法完整分析歷史脈絡。"
+    
+    last10 = df.tail(10)
+    price_change_10d = (df['Close_for_calc'].iloc[-1] / df['Close_for_calc'].iloc[-10] - 1) * 100
+    vol_change_10d = (last10['Volume'].mean() / df['VOL_MA20'].iloc[-10] - 1) * 100 if not np.isnan(df['VOL_MA20'].iloc[-10]) else 0
+    
+    # 關鍵轉折點：最近10日內最大漲跌日
+    daily_returns = last10['Close_for_calc'].pct_change()
+    max_up_day = daily_returns.idxmax()
+    max_down_day = daily_returns.idxmin()
+    max_up_pct = daily_returns.max() * 100
+    max_down_pct = daily_returns.min() * 100
+    
+    context = (
+        f"**前10日脈絡：** 價格累計變動 {price_change_10d:+.1f}%，量能相對20日前均量變動 {vol_change_10d:+.1f}%。\n"
+        f"關鍵事件：{max_up_day.strftime('%m-%d')} 大漲{max_up_pct:+.1f}%（可能受利多消息或技術突破）；"
+        f"{max_down_day.strftime('%m-%d')} 大跌{max_down_pct:.1f}%（可能遇壓力或負面因素）。\n"
+        "整體前因顯示：近期波動加劇，需留意是否延續上漲動能或轉入震盪。"
+    )
+    return context
+
+def future_scenarios(df, last_rsi, macd_hist_trend, price_pos, vol_ratio):
+    """分析後果：基於當前指標的未來情境"""
+    scenarios = []
+    
+    # 多頭情境
+    if price_pos == "收在 EMA10 之上" and macd_hist_trend == "上升" and last_rsi < 70:
+        scenarios.append("**樂觀情境（機率中高）：** 若放量突破近期高點，MACD柱續擴張，可望延續多頭至下個阻力（預估上漲5-10%），適合加碼追漲。")
+    else:
+        scenarios.append("**樂觀情境（機率中低）：** 需等待回測EMA10止穩並放量反彈，方有上攻機會。")
+    
+    # 空頭情境
+    if price_pos == "已跌破 EMA30" or last_rsi > 70:
+        scenarios.append("**悲觀情境（機率中高）：** 若量縮跌破EMA30，MACD轉負，可能加速下探近期低點（預估下跌5-8%），建議減倉避險。")
+    else:
+        scenarios.append("**悲觀情境（機率中低）：** 守住EMA30並出現長下影陽線，可化解下行壓力。")
+    
+    # 中性/整理
+    if 30 <= last_rsi <= 70 and vol_ratio < 1.2:
+        scenarios.append("**中性情境（機率高）：** 持續盤整於EMA10-30區間，等待突破訊號；RSI中性無極端，宜觀望或小倉波段。")
+    
+    return "\n".join(scenarios)
+
 def important_levels(df):
     last = df.iloc[-1]
     ema10, ema30, ema40 = last['EMA10'], last['EMA30'], last['EMA40']
@@ -144,6 +207,8 @@ def generate_detailed_report(df, ticker):
     """組合最終詳細綜合解讀文字（中文）"""
     last5 = df.tail(5)
     last = df.iloc[-1]
+    last_rsi = last['RSI']
+    vol_ratio = last['Volume'] / last['VOL_MA20'] if not np.isnan(last['VOL_MA20']) else 1
 
     # quick conclusion
     quick = overall_trend_text(df)
@@ -152,9 +217,10 @@ def generate_detailed_report(df, ticker):
     macd = macd_status(df)
     vol_now = last['Volume']
     vol_ma20 = last['VOL_MA20']
-    vol_note = "量不足" if np.isnan(vol_ma20) else f"當日量 {vol_now:.0f}，20日均量 {vol_ma20:.0f}（比率 {vol_now/vol_ma20:.2f}x）"
+    vol_note = "量不足" if np.isnan(vol_ma20) else f"當日量 {vol_now:.0f}，20日均量 {vol_ma20:.0f}（比率 {vol_ratio:.2f}x）"
+    rsi_note = rsi_status(last_rsi)
 
-    # per-candle table
+    # per-candle table (新增RSI)
     rows = []
     for idx, row in last5.iterrows():
         rows.append({
@@ -164,7 +230,8 @@ def generate_detailed_report(df, ticker):
             "低": round(row['Low'],2),
             "收": round(row['Close_for_calc'],2),
             "成交量": int(row['Volume']),
-            "單根解讀": single_candle_interpret(row, row['EMA10'], row['EMA30'], row['VOL_MA20'])
+            "RSI": f"{row['RSI']:.1f}",
+            "單根解讀": single_candle_interpret(row, row['EMA10'], row['EMA30'], row['VOL_MA20'], row['RSI'])
         })
     per_candle_df = pd.DataFrame(rows)
 
@@ -175,38 +242,37 @@ def generate_detailed_report(df, ticker):
         f"最近20日高點 {lv['recent_high_20']:.2f}，低點 {lv['recent_low_20']:.2f}。"
     )
 
-    # composite meaning
+    # historical context (前因)
+    hist_context = historical_context(df)
+
+    # future scenarios (後果)
+    macd_trend = "上升" if last['MACD_hist'] > last['MACD_hist'].iloc[-3] if len(df)>=3 else "中性"
     price_pos = ("收在 EMA10 之上" if last['Close_for_calc'] > lv['EMA10']
                  else "收在 EMA10 與 EMA30 之間" if last['Close_for_calc'] > lv['EMA30']
                  else "已跌破 EMA30")
-    
-    # 修復 MACD 提示以處理資料不足的情況
-    hist_now = df['MACD_hist'].iloc[-1]
-    if len(df) >= 3:
-        hist_3ago = df['MACD_hist'].iloc[-3]
-        if hist_now > 0 and hist_now < hist_3ago:
-            macd_hint = "動能仍正但柱體縮小（需留意動能是否繼續衰竭）"
-        elif hist_now > hist_3ago:
-            macd_hint = "動能擴張（上攻續有機會）"
-        else:
-            macd_hint = "動能偏弱或收斂"
-    else:
-        macd_hint = "動能資料不足（近期K線太少）"
+    future_scen = future_scenarios(df, last_rsi, macd_trend, price_pos, vol_ratio)
+
+    # composite meaning
+    macd_hint = "動能仍正但柱體縮小（需留意動能是否繼續衰竭）" if len(df) >= 3 and last['MACD_hist'] > 0 and last['MACD_hist'] < last['MACD_hist'].iloc[-3] else \
+               ("動能擴張（上攻續有機會）" if len(df) >= 3 and last['MACD_hist'] > last['MACD_hist'].iloc[-3] else "動能偏弱或收斂")
 
     composite = (
-        f"目前價格 {price_pos}；{macd_hint}。異動量能：{vol_note}。\n"
+        f"目前價格 {price_pos}；{macd_hint}。異動量能：{vol_note}。{rsi_note}\n"
+        f"{hist_context}\n"
+        f"未來情境觀察：\n{future_scen}\n"
         "綜合來看：\n"
         "- 中期趨勢：" + quick + "\n"
         f"- MACD 與動能狀態：{macd}\n"
         f"- 重要價位：{levels_text}\n"
     )
 
-    # concrete suggestions
-    advice = []
-    advice.append("持有者：若你屬保守型，建議把停損放在 EMA30（或略下方）；若偏積極，可保留核心倉並在價格回測 EMA10 或 EMA30 並確認止跌後分批加碼。")
-    advice.append("新多單：目前不建議追高。較安全做法為等回測到 EMA10（觀察是否量縮並帶下影）或等價格突破且站穩近期高點並放量後再追。")
-    advice.append("短線/做空者：當日若出現放量跌破 EMA30 且 MACD 柱轉負，可考慮短線做空（嚴設停損，目標先看 EMA40 / 最近低點）。")
-    advice.append("風險控管：控倉、分批與嚴格停損是關鍵；留意成交量是否放大配合方向，以免被套在高位。")
+    # concrete suggestions (更全面建議，整合前因後果)
+    advice = [
+        "**持有者建議：** 依前10日漲跌脈絡，若近期大漲後RSI超買，保守者減半倉位設停損於EMA30下方5%；積極者若MACD擴張，可持倉觀察突破近期高點。",
+        "**新多單進場：** 避免追高，等待回測EMA10/30並出現長下影+放量訊號（參考前因關鍵低點），或RSI回落至50以下再布局，目標上攻10%空間。",
+        "**短線/做空策略：** 若跌破EMA30且量放大（類似前因大跌日），可短空至EMA40或近期低點，停損設近期高點上方；RSI>70時為理想空點。",
+        "**風險控管與後果規避：** 控倉不超總資產10%，分批操作；監控未來情境，若中性盤整持續，轉為觀望；總原則：順勢而為，嚴守停損以防黑天鵝。"
+    ]
 
     advice_text = "\n".join([f"- {a}" for a in advice])
 
@@ -216,6 +282,7 @@ def generate_detailed_report(df, ticker):
         "quick_summary": quick,
         "indicators_text": macd,
         "volume_note": vol_note,
+        "rsi_note": rsi_note,
         "levels_text": levels_text,
         "composite_text": composite,
         "advice_text": advice_text,
@@ -224,7 +291,7 @@ def generate_detailed_report(df, ticker):
     return report
 
 # ----------------- Streamlit UI -----------------
-st.title("📈 自動日報表：最後 5 日K + 詳細綜合解讀")
+st.title("📈 自動日報表：最後 5 日K + 詳細綜合解讀（含前因後果）")
 with st.sidebar:
     st.header("設定")
     ticker = st.text_input("股票代號（例：TSLA、AAPL、0700.HK）", value="TSLA")
@@ -242,6 +309,8 @@ if run_button:
             df = compute_indicators(df)
             if len(df) < 20:
                 st.warning("資料筆數較少（<20），部分指標可能不足或不精準。")
+            elif len(df) < 10:
+                st.warning("資料筆數過少（<10），前因分析將簡化。")
             elif len(df) < 3:
                 st.warning("資料筆數過少（<3），MACD 部分分析將簡化。")
 
@@ -287,17 +356,18 @@ if run_button:
                 st.subheader("🔎 詳細綜合解讀")
                 st.markdown(f"**快速結論：** {report['quick_summary']}")
                 st.markdown(f"**指標摘要：** {report['indicators_text']}")
+                st.markdown(f"**RSI 狀態：** {report['rsi_note']}")
                 st.markdown(f"**量能觀察：** {report['volume_note']}")
                 st.markdown(f"**重要價位：** {report['levels_text']}")
                 st.markdown("**綜合說明：**")
                 st.write(report['composite_text'])
-                st.markdown("**具體建議（持有 / 新多 / 短線）**")
+                st.markdown("**具體建議（整合前因後果）**")
                 st.write(report['advice_text'])
 
-            st.subheader("最近 5 根 K 線逐根解讀")
+            st.subheader("最近 5 根 K 線逐根解讀（含RSI）")
             st.dataframe(report['per_candle_df'])
 
-            st.info("提示：程式使用 'Adj Close'（若有）做指標計算。請記得將停損與倉位依照你的風險承受度調整。")
+            st.info("提示：程式使用 'Adj Close'（若有）做指標計算。請記得將停損與倉位依照你的風險承受度調整。新增RSI輔助超買超賣判斷。")
             st.success("報表產生完成 ✅")
 
 # Footer / Notes
