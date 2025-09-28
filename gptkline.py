@@ -203,59 +203,6 @@ def important_levels(df):
         "recent_low_20": recent_low
     }
 
-def get_macro_and_sentiment(ticker: str, period: str = "6mo"):
-    """新增：獲取宏觀因素與投資人情緒（使用 yfinance 擴展）"""
-    # 宏觀：大盤走勢
-    try:
-        sp_df = yf.download('^GSPC', period=period, progress=False)
-        nasdaq_df = yf.download('^IXIC', period=period, progress=False)
-        sp_change = ((sp_df['Close'].iloc[-1] / sp_df['Close'].iloc[0] - 1) * 100) if not sp_df.empty else 0
-        nasdaq_change = ((nasdaq_df['Close'].iloc[-1] / nasdaq_df['Close'].iloc[0] - 1) * 100) if not nasdaq_df.empty else 0
-        sp_date = sp_df.index[-1].strftime('%Y-%m-%d') if not sp_df.empty and len(sp_df) > 0 else datetime.now().strftime('%Y-%m-%d')
-        sp_recent = f"S&P 500 近期變動 {sp_change:+.1f}% (截至 {sp_date})"
-        nasdaq_recent = f"NASDAQ 近期變動 {nasdaq_change:+.1f}% (歷史9月平均 -0.6%)"
-    except Exception:
-        sp_recent = "S&P 500 近期變動 N/A (資料獲取失敗)"
-        nasdaq_recent = "NASDAQ 近期變動 N/A (資料獲取失敗)"
-    
-    # FOMC：基於最新會議（硬編碼 2025-09 數據，實際可擴展為 API）
-    fomc_text = "FOMC 9/16-17 會議降息 0.25% 至 4.00%-4.25% (成長放緩、失業微升、通脹上揚)；SEP 中位數預期 2025 年底 3.6% (較6月下調0.3%)，GDP成長1.6% (上調0.2%)，失業率4.5%，PCE通脹3.0%。不確定性高，下行風險升，利多成長股但需防就業數據。"
-    
-    macro_text = f"**宏觀因素：**\n- 美股大盤：{sp_recent}；{nasdaq_recent}。\n- 利率 & Fed 政策：{fomc_text}\n整體環境中性偏多，科技股波動加劇，宜順勢操作。"
-    
-    # 情緒：分析師、機構、期權、新聞/社交
-    try:
-        t = yf.Ticker(ticker)
-        info = t.info
-        recommendation = info.get('recommendationKey', 'N/A')
-        target_mean = info.get('targetMeanPrice', 'N/A')
-        
-        # 機構持股（簡化摘要）
-        holders = t.institutional_holders
-        inst_own_pct = holders['% Out'].iloc[0] if not holders.empty else 26.82  # 示例 26.82%
-        inst_text = f"機構持股約 {inst_own_pct:.1f}% (Vanguard/State Street 等大戶穩定，無重大減持跡象)。"
-        
-        # 新聞（前 3 筆摘要，代理社交熱度）
-        news = t.news[:3]
-        news_summary = "近期新聞："
-        for n in news:
-            title = n.get('title', '')
-            publisher = n.get('publisher', '')
-            news_summary += f"\n- {title} ({publisher}) – 情緒混合 (AI/機器人樂觀 vs 銷售/內部賣股擔憂)。"
-        if not news:
-            news_summary += " 無近期重大新聞，社交熱度中性。"
-        
-        # 期權（使用 IV 與 volume 代理 flow）
-        options = t.option_chain(t.options[0]) if t.options else pd.DataFrame()
-        iv = info.get('impliedVolatility', 0.6147)  # 示例 IV 61.47%
-        opt_text = f"期權 IV {iv:.2%} (中低 rank 29%)，volume 高 (4M+ contracts)，unusual flow 顯示對沖拉回，偏向下行 tug-of-war。"
-        
-        sentiment_text = f"**投資人情緒與其他因素：**\n- 分析師評級：{recommendation} (共識 Hold，平均目標 ${target_mean:.2f}，高達 $600)。\n- 機構動作：{inst_text}\n- 期權市場：{opt_text}\n- 新聞/社交熱度：{news_summary}\n整體情緒混合，社交分歧 (樂觀機器人 vs 擔憂財務)，需監控 options hedge 訊號。"
-    except Exception:
-        sentiment_text = "**投資人情緒與其他因素：**\n資料獲取失敗，使用預設：分析師 Hold，機構穩定，情緒混合。建議手動查詢最新新聞與評級。"
-    
-    return macro_text, sentiment_text
-
 def generate_detailed_report(df, ticker):
     """組合最終詳細綜合解讀文字（中文）"""
     last5 = df.tail(5)
@@ -270,7 +217,7 @@ def generate_detailed_report(df, ticker):
     macd = macd_status(df)
     vol_now = last['Volume']
     vol_ma20 = last['VOL_MA20']
-    vol_note = "量不足" if np.isnan(vol_ma20) else f"當日量 {vol_now:.0f}，20日均量 {vol_ma20:.0f} (比率 {vol_ratio:.2f}x)"
+    vol_note = "量不足" if np.isnan(vol_ma20) else f"當日量 {vol_now:.0f}，20日均量 {vol_ma20:.0f}（比率 {vol_ratio:.2f}x）"
     rsi_note = rsi_status(last_rsi)
 
     # per-candle table (新增RSI)
@@ -330,9 +277,6 @@ def generate_detailed_report(df, ticker):
 
     advice_text = "\n".join([f"- {a}" for a in advice])
 
-    # 新增：宏觀與情緒
-    macro_text, sentiment_text = get_macro_and_sentiment(ticker)
-
     # package
     report = {
         "ticker": ticker,
@@ -353,10 +297,7 @@ def generate_detailed_report(df, ticker):
         "price_pos": price_pos,
         "macd_trend": macd_trend,
         "last_rsi": last_rsi,
-        "vol_ratio": vol_ratio,
-        # 新增字段
-        "macro_text": macro_text,
-        "sentiment_text": sentiment_text
+        "vol_ratio": vol_ratio
     }
     return report
 
@@ -512,12 +453,6 @@ if run_button:
 
             with col2:
                 st.subheader("🔎 詳細綜合解讀")
-                # 新增：宏觀因素
-                st.markdown("**宏觀因素（市場與經濟環境）：**")
-                st.markdown(report['macro_text'])
-                # 新增：投資人情緒
-                st.markdown("**投資人情緒與其他因素：**")
-                st.markdown(report['sentiment_text'])
                 st.markdown(f"**快速結論：** {report['quick_summary']}")
                 st.markdown(f"**指標摘要：** {report['indicators_text']}")
                 st.markdown(f"**RSI 狀態：** {report['rsi_note']}")
@@ -545,3 +480,4 @@ st.markdown("---")
 st.markdown("若要我：")
 st.markdown("- 幫你把停損改成以 ATR 動態設定（例如 1.5 * ATR）請按「需要 ATR 支援」。")
 st.markdown("- 或把報表自動發到 Telegram / Email，我可以把 webhook 範例加上去（需要你提供 API token）。")
+
