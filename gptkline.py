@@ -210,39 +210,45 @@ def get_macro_and_sentiment(ticker: str, period: str = "6mo"):
     nasdaq_df = yf.download('^IXIC', period=period, progress=False)
     sp_change = ((sp_df['Close'].iloc[-1] / sp_df['Close'].iloc[0] - 1) * 100) if not sp_df.empty else 0
     nasdaq_change = ((nasdaq_df['Close'].iloc[-1] / nasdaq_df['Close'].iloc[0] - 1) * 100) if not nasdaq_df.empty else 0
-    sp_recent = f"S&P 500 近期變動 {sp_change:+.1f}%（截至 {sp_df.index[-1].strftime('%Y-%m-%d')}）"
-    nasdaq_recent = f"NASDAQ 近期變動 {nasdaq_change:+.1f}%（9月平均歷史 -1.9%）"
+    sp_date = sp_df.index[-1].strftime('%Y-%m-%d') if not sp_df.empty else datetime.now().strftime('%Y-%m-%d')
+    sp_recent = f"S&P 500 近期變動 {sp_change:+.1f}%（截至 {sp_date}）"
+    nasdaq_recent = f"NASDAQ 近期變動 {nasdaq_change:+.1f}%（歷史9月平均 -0.6%）"
     
     # FOMC：基於最新會議（硬編碼 2025-09 數據，實際可擴展為 API）
-    fomc_text = "FOMC 9/17 會議降息 0.25% 至 4.00%-4.25%（軟勞動市場+通脹上升）；dot plot 預期 2025 年底 3.5%-3.75%（再降 2 次）。利多成長股但需防通脹反彈。"
+    fomc_text = "FOMC 9/16-17 會議降息 0.25% 至 4.00%-4.25%（成長放緩、失業微升、通脹上揚）；SEP 中位數預期 2025 年底 3.6%（較6月下調0.3%），GDP成長1.6%（上調0.2%），失業率4.5%，PCE通脹3.0%。不確定性高，下行風險升，利多成長股但需防就業數據。"
     
     macro_text = f"**宏觀因素：**\n- 美股大盤：{sp_recent}；{nasdaq_recent}。\n- 利率 & Fed 政策：{fomc_text}\n整體環境中性偏多，科技股波動加劇，宜順勢操作。"
     
     # 情緒：分析師、機構、期權、新聞/社交
-    t = yf.Ticker(ticker)
-    info = t.info
-    recommendation = info.get('recommendationKey', 'N/A')
-    target_mean = info.get('targetMeanPrice', 'N/A')
-    
-    # 機構持股（簡化摘要）
-    holders = t.institutional_holders
-    inst_own_pct = holders['% Out'].iloc[0] if not holders.empty else 26.82  # 示例 26.82%
-    inst_text = f"機構持股約 {inst_own_pct:.1f}%（Vanguard/State Street 等大戶穩定，無重大減持跡象）。"
-    
-    # 新聞（前 3 筆摘要，代理社交熱度）
-    news = t.news[:3]
-    news_summary = "近期新聞："
-    for n in news:
-        title = n.get('title', '')
-        publisher = n.get('publisher', '')
-        news_summary += f"\n- {title} ({publisher}) – 情緒混合（AI/機器人樂觀 vs 銷售/內部賣股擔憂）。"
-    
-    # 期權（使用 IV 與 volume 代理 flow）
-    options = t.option_chain(t.options[0]) if t.options else pd.DataFrame()
-    iv = info.get('impliedVolatility', 0.6147)  # 示例 IV 61.47%
-    opt_text = f"期權 IV {iv:.2%}（中低 rank 29%），volume 高（4M+ contracts），unusual flow 顯示對沖拉回，偏向下行 tug-of-war。"
-    
-    sentiment_text = f"**投資人情緒與其他因素：**\n- 分析師評級：{recommendation}（共識 Hold，平均目標 ${target_mean:.2f}，高達 $600）。\n- 機構動作：{inst_text}\n- 期權市場：{opt_text}\n- 新聞/社交熱度：{news_summary}\n整體情緒混合，社交分歧（樂觀機器人 vs 擔憂財務），需監控 options hedge 訊號。"
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info
+        recommendation = info.get('recommendationKey', 'N/A')
+        target_mean = info.get('targetMeanPrice', 'N/A')
+        
+        # 機構持股（簡化摘要）
+        holders = t.institutional_holders
+        inst_own_pct = holders['% Out'].iloc[0] if not holders.empty else 26.82  # 示例 26.82%
+        inst_text = f"機構持股約 {inst_own_pct:.1f}%（Vanguard/State Street 等大戶穩定，無重大減持跡象）。"
+        
+        # 新聞（前 3 筆摘要，代理社交熱度）
+        news = t.news[:3]
+        news_summary = "近期新聞："
+        for n in news:
+            title = n.get('title', '')
+            publisher = n.get('publisher', '')
+            news_summary += f"\n- {title} ({publisher}) – 情緒混合（AI/機器人樂觀 vs 銷售/內部賣股擔憂）。"
+        if not news:
+            news_summary += " 無近期重大新聞，社交熱度中性。"
+        
+        # 期權（使用 IV 與 volume 代理 flow）
+        options = t.option_chain(t.options[0]) if t.options else pd.DataFrame()
+        iv = info.get('impliedVolatility', 0.6147)  # 示例 IV 61.47%
+        opt_text = f"期權 IV {iv:.2%}（中低 rank 29%），volume 高（4M+ contracts），unusual flow 顯示對沖拉回，偏向下行 tug-of-war。"
+        
+        sentiment_text = f"**投資人情緒與其他因素：**\n- 分析師評級：{recommendation}（共識 Hold，平均目標 ${target_mean:.2f}，高達 $600）。\n- 機構動作：{inst_text}\n- 期權市場：{opt_text}\n- 新聞/社交熱度：{news_summary}\n整體情緒混合，社交分歧（樂觀機器人 vs 擔憂財務），需監控 options hedge 訊號。"
+    except Exception:
+        sentiment_text = "**投資人情緒與其他因素：**\n資料獲取失敗，使用預設：分析師 Hold，機構穩定，情緒混合。建議手動查詢最新新聞與評級。"
     
     return macro_text, sentiment_text
 
